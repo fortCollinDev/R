@@ -1,0 +1,90 @@
+---
+title: "Filtering Sampling Points"
+author: "Dan Carver"
+date: "2018/04/06"
+output:
+  html_document:
+    highlight: tango
+    number_sections: yes
+    theme: journal
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+
+# What does sample filtering even mean?  
+That's a good question. Let's start with a know tenet of numberical model.
+**"Bad Data In = Bad Data Out"**
+It's real, your model will work better with better data. This is a bit of a no duh statement but the true is that data quality is often the limiting factor in the usefullness of a model. This can get even more complex when your applying training data across space and time. I'll illistrate the example below.
+
+> Your tasked with modeling the spread of a  invasive species of grass over time. You've accumulated lots of field collected data about the presence and absence of the species within your study area. The trouble is that the data is not evenly distributed across time. Basically there is a little bit of information from the past and current time frame and alot of good quality information about the location of this species from 2015.
+Your hope is that you could apply the 2015 data to different periods in time. Yet the landscape is not static and you release that a presence point in 2015 might of been a native grassland in 2005 or a parking lot in 2017. How can you test your sampling points to see if your values from you data are representative of the landscape at different points in time?
+
+## Simple Filter
+We will be walking through a process to answer that exact question. Because it is a specific questions there are some specific conditions that need to be set in order to get it to work.
+
+**Assumptions**
+1. You ran a model for a given year and you believe the results are good
+2. You've exacted values from imagery from a secondary time frame using the same location data as you did in assumption 1
+
+If the importance of these assumptions is not clear yet, don't worry. It should come to life as we work through the material below.
+
+We will look at the known data set first. This is a processed data set that has
+gone through the variable selection process
+
+## 2015 Know location and top predictors
+```{r}
+#input data from a year that was sampled
+dataSam <- read.csv("data2015.csv")
+namesSam <- names(dataSam)
+head(dataSam)
+
+# subset the data based on presence and absence
+presenceSam <- subset(dataSam, response_var== 1)
+absenceSam <- subset(dataSam, response_var== 0)
+
+# this is all we do with the first dataset for the time being.
+```
+
+## 2005 values extract to 2015 known locations
+This data set was created by taking the 2015 known locations and overlaying those on to 2005 imagery. The values assocaited with the 2005 imagery were extracted to the point locations and the resulting csv contains those values.
+
+```{r}
+#import data from the year where the model is being projected
+dataNew <- read.csv("data2005.csv")
+
+#identify the column names of the 2005 data
+namesNew <- names(dataNew)
+namesNew
+```
+We can see from the names that column names from the 2005 data due not match the column name from the 2015 data. Since we conducted variable selection on the 2015 dataset we are going to assume that the predictor variable from 2015 would work well in 2005 as well. So we only want to work those preditors. Luckly R allows you to do this fairly easily
+
+## Limiting variables based on known predictors
+```{r}
+#take a look at the names of our known predictos
+namesSam
+#lets create a list of the features that matches the 05 dataset
+# change this : "TCG_05_T1","mndwi_05_T2","ndvi_05_T3","swir1_05_T3"
+# to this : "TCG_15_T1","mndwi_15_T2","ndvi_15_T3","swir1_15_T3"
+namePredictors <- c("TCG_05_T1","mndwi_05_T2","ndvi_05_T3","swir1_05_T3")
+# create a new dataframe from 2005 data that is based on the predictors from 2015
+Predictors <- dataNew[which( namePredictors %in% names(dataNew))]
+
+###
+#now this is not really a best pratice technique but it get the job done. We will
+#rename the values from 2005 to match those from 2015. It works but you have to
+#keep you variables staight.
+
+colnames(Predictors) <-c("X","response_var","TCG_15_T2", "swir1_15_T3" )
+
+```
+
+
+
+###
+#Unique to this specific sample; Set values to match the 2015 colNames
+colnames(dataNew) <-c("X","response_var","TCG_15_T2", "swir1_15_T3" )
+#subset based on response variable
+absence <- subset(dataNew, response_var==1)
+presence <- subset(dataNew, response_var==0)
+###

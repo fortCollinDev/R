@@ -1,0 +1,431 @@
+---
+title: "Using Remote Sensing to Detect Tamarisk Cover in the Green River Watershed"
+author: "Colorado River Basin Water Resources team"
+date: "8/10/2017"
+output:
+  html_document:
+    highlight: tango
+    number_sections: yes
+    theme: journal
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+#this include parameter set to false ensures that the code in this section is not shown in the final product.
+knitr::opts_chunk$set(echo = TRUE)
+library(rmarkdown)
+```
+
+<center><h1>**Colorado River Basin Water Resources**</h1></center>
+<center><h3>**DEVELOP Summer 2017 Fort Collins** </h3></center>
+<center><h4>*Authors: Megan Vahsen, Emily Campbell, Chanin Tilakamonkul, Julia Sullivan, Daniel Carver*</h4></center>
+
+
+ =-=-=-=-===-=-=-=-=-===-=-=-=-=-===-=-=-=-=-===-=-=-=-=-===-=-=-=-=-===-=-=-=-=-===-=-=-=-==-=-=-=-===
+
+
+---------------------------------------------------------- Background on random forest
+
+
+# Running Through Random Forest
+While this may not be as fun as running through a real forest, it's not a bad substitute for a rainy day and it certainly tells you a lot more about how much tamarisk is out there.
+
+## Setting the Stage
+Let's get started by ensuring all our ducks are in a row. Below is a listing of all the packages that are used by R to complete this analysis.
+
+```{r}
+# installs packages that are not installed yet and loads all packages needed
+pacman::p_load(raster, shapefiles, sp, rgdal, randomForest, caret, e1071,
+               MASS, ROCR, corrplot, rfUtilities, VSURF, rmarkdown)
+# this is your working directory, it shows where all the files will be stored
+wd <-getwd()
+print(wd)
+```
+
+
+## What is Random Forest
+Random Forest is a type of Classifaction And Regression Tree (CART) algorithm. Most people know these as decision trees, where a choice at a junction decides which path to move forward on. Random Forest really is a forest in the sense that it generates hundreds if not thousands of decision trees. The randomness of it comes from how it chooses which variables are in each tree as well as which data points are used to build or train the individual decision trees. Being a machine learning algorithm, things get complicated rather quickly. Don't think you can't understand what's going on in the analysis, you will just need to put on your thinking cap and spend some time with it. I suggest starting with this excellent visual explanation of the machine learning proces.
+
+[Example of How Machine Learning Works](http://www.r2d3.us/visual-intro-to-machine-learning-part-1/)
+
+Before continuing with our tutorial, it is important to know that the Random Forest algorithm which we rely on requires three user defined components.
+
+1. Regression or Binary
+    + Regressions can be used with continuous data such as percent  cover.
+    + Binary models should be used with categorical data such as presence/absence (yes/no).
+2. Response Variable
+    + This is the variable which the model is attempting to predict. In our case this will either be percent tamarisk cover (regression) or tamarisk presence (binary).
+3. Predictor Variables
+    + These are the measured characteristics that will be used to predict the percent cover or presence of tamarisk. In our case, our predictor variables are data derived from remotely sensed imagery.
+
+## Binary or Regression model
+In order to decide which model approach is most applicable, let's take a look at our data.
+```{r}
+
+# import the csv as a data frame
+data <- read.csv(file.path(wd, "TamData_16_noevi.csv"))
+# get an idea of the size of the data frame
+rows <- nrow(data)
+columns <- ncol(data)
+print(paste("This data frame consists of ",rows," rows and ",columns," columns."))
+```
+That's quite a bit of data. Printing out the whole thing would be a bit of a mess and hard to look at. Let's limit some of the information.
+```{r fig.cap = "Example of the structure of the data that will be used within this analysis."}
+# use indexing and the head function to print only the first 5 rows and the first 10 columns
+head(data[,1:10])
+```
+Okay, that's better. We see some standing information such as ID, X and Y coordinates, and year. But remember, we need a response variable and predictor variables to run Random Rorest. The columns 'PresenceAb' and 'Percent_Cov' seem like they would work for the response variables. We will look at them in more detail in a minute. Our last variable is "X0415_blue", which I know refers to the blue band of a Landsat image (specifically April 2015). We were planning on using our data derived from remote sensing for our predictor variables so let's check to see if the data type is continuous through the rest of the 125 columns.
+
+```{r}
+library(plyr)
+# The count function from the plyr library shows the unique values of
+# the potential response variables to see if they match what is expected
+# for presence absence(0,1) and percent cover (0-100).
+
+# This is a frequency summary of the presence absence data. The values a should be either 0 or 1.
+count(data["PresenceAb"])
+
+# This is a frequency summary of the percent cover data. The values should all fall between 0 and 100.
+count(data["Percent_Cov"])
+
+# These are the column names of the last 5 variables in the data frame.
+tail(data[125:135])
+```
+
+Great! So we can see that PresenceAb is indeed a binary column, and Present_Cov is a series of values between 0 and 100. If we assume the same naming convention was used when this data was created, there are 125 predictor variables.
+
+So we can run either a binary or regression based Random Forest model. Let's start with regression; it's a more detailed dataset so it should provide a more descriptive model. There are a few steps we need to take before we jump into running Random Forest- the first of which is variable selection.
+
+
+
+
+
+
+
+-------------------------------------------------------------- Variable Selection Process
+
+
+## Variable Selection Process
+We currently have 125 predictor variables available for us within this dataset, which is awesome. On the other hand, we can expect that many of these variables are correlated and that the run time of these models increases with the number of predictor variables.
+The goal of any model should be to find the right number of variables to describe the system, no more, no less.
+
+So we're going to conduct some variable selection.
+There are two options that we tested;
+[RFUtilities](https://www.rdocumentation.org/packages/rfUtilities/versions/2.1-0)
+and
+[VSURF](https://www.rdocumentation.org/packages/VSURF/versions/1.0.3/topics/VSURF).
+Both have their pros and cons. RFutilities is fast and commonly used throughout the literature. VSURF is a more robust process that produced variables that led to higher model predictions in our study.
+For this example we're going to use the the variable selection function of rfUtilities.
+
+```{r fig.cap = "List of the top ten predictors and there relative importance to the model. These are taken from 125 potential predictors."}
+# Set random seed
+set.seed(123)
+
+# Create a new data frame with only the raster data
+rastercolumns <- data[, 10:135]
+
+# Let's look at variable importance and parsimony (reduce number of predictors
+# as much as possible without losing too much explanatory power) in our model
+varimportance_cov <- rf.modelSel(rastercolumns, data$Percent_Cov, imp.scale="se")
+
+varimportance_cov <- cbind(rownames(varimportance_cov$sel.importance), varimportance_cov$sel.importance)
+rownames(varimportance_cov) <- NULL
+colnames(varimportance_cov) <- c("name", "importance")
+
+varimportance_cov_ord <- varimportance_cov[order(-varimportance_cov$imp),]
+print(varimportance_cov_ord[1:10,])
+
+# drop columns that are not as important based on rfmodelsel
+raster_cov_names <- varimportance_cov_ord$name[1:10]
+```
+Alright, so we now have a list of ten variables that the rfUtilities variable selection tool determined to have the highest predictive capabilities. We will run with these ten for now.
+The next step in variable selection is to remove the variables that are highly correlated to simplify our model.
+
+## Removing Correlated Variables
+Recursive models such as Random Forest handle correlated variables rather well, yet it is an established modeling technique to reduce the number of correlated variables.
+We will do this by inspecting a correlation matrix and deciding what stays and what goes. Ideally this decision process is informed by both correlation values and knowledge of the importance of the predictor in capturing ecological conditions. If you have that expert knowlegde, use it. If not, just follow the framework we've established below.
+
+```{r fig.cap = "A correlation plot between the ten top predictors; a Pearsons correlation coefficient of 0.7 was used."}
+
+rastercolumns_cov <- rastercolumns[,as.character(raster_cov_names)[1:10]]
+
+# Calculate correlation coefficient matrix
+correlation <-cor(rastercolumns_cov, method="pearson")
+
+# Plot the correlation. The darker the number,
+# the more correlated the two variables
+corrplot(correlation,method="number")
+```
+This correlation plot shows how the top ten prediction variables are correlated with one another. We're going to work at removing relationships where variables are correlated at values greater then 70 percent. We will favor the variables that have more predictive power. Below is a step by step process as to how we slimmed down number of variables.
+
+1. Start with the first column. Note the position of any variable with >|0.7| correlation
+    + No correlations present
+2. Move to the second column and repeat
+    + 5, X0616_mndwi
+    + 9, X0415_Twet
+    + 10, X0716_mndwi
+3. Move to the thrid column and repeat
+    + 4, X0815_gemi
+    + 7, X0716_slavi
+
+At this point it becomes difficult to remember which columns have been removed. Let's rerun our correlation plot removing the correlated indicies we've already identified (5,9,10,4,7)
+
+```{r fig.cap = "A second correlation plot using a subset of the original top ten predictors. Producing multiple correlation plots is advisable to attempt to decipher large correlation plots."}
+
+# We're using indexing to remove the rows that correspond to the correlated predictor variables
+rastercolumns_cov2 <- rastercolumns[,as.character(raster_cov_names)[-c(5,9,10,4,7)]]
+                                                              
+# Calculate correlation coefficient matrix
+correlation2 <-cor(rastercolumns_cov2, method="pearson")
+
+# Plot the correlation. The darker the number, the more correlated the two
+# variables
+corrplot(correlation2, method="number")
+```
+The new correlation plot shows that there are 5 variables that can be used in the model, which are all significant and important.
+
+```{r}
+# Create a list of the names of the final raster to use to select what data should be used from the orginal 125 potential predictors
+predictors <- colnames(rastercolumns_cov2)
+
+```
+
+There you have at. A short list of the variables that we will use to predict percent cover of tamarisk.
+At this point, it's important to take some time to think about what these variables mean. In our case that's a matter of looking up what these bands and/or indices are used for within the remote sensing community.
+
+
+`r predictors`
+
+
+---------------------------------------------------- running the RF code continuous data
+
+
+## Running the Code and Interpreting the Results
+Now with our response variable and predictor variables established, let's run the Random Forest model.
+We're first going to combine the response variable and predictor variables into the same data frame. Once that is done, we will set up our model and let it run.
+```{r fig.cap = "Results of the regression random forest model. These values are useful for comparing values across multiple models when testing model input or parameters."}
+# define the response variable
+responce_var <- data$Percent_Cov
+# define the predictor variables
+predictor_var <- rastercolumns_cov2
+# combine the two to a single data frame
+dataset <- cbind(responce_var, predictor_var)
+# run the random forest model where the response variable is being predicted # by all other variables within the data frame "dataset"
+rf_model1 = randomForest(responce_var ~ ., data = dataset, importance = TRUE)
+# print the results of the rf model.
+rf_model1
+
+```
+
+
+--------------------------------------------------- displaying results for the continuous model
+
+Great! We ran a Random Forest model. It provides a limited model evaluation, which includes Mean of squared residuals and % Var explained. In general you want to maximize the % variance explained and minimize the mean of squared residuals.
+The results can be visualized graphically by plotting the predicted value against the observed values as shown below.
+```{r fig.cap = "Observed values plotted against predicted values illustrates areas where the model will over or underpredict."}
+# Plot Predicted vs. Observed: Now we want to see how well our algorithm
+# compares predicted tamarisk cover to observed tamarisk cover
+
+# sets graphic parameter so it is a 1 x 1 output
+par(mfrow=c(1,1))
+
+# creates a vector of predicted values of tamarisk cover based on model (one for each
+# actual observation)
+predicted <- rf_model1$predicted
+
+# creates a vector of actual values of tamarisk cover based on collected data
+observed<-data$Percent_Cov
+
+# plot observed values on the x-axis and predicted values on the y-axis. we are
+# looking for these to be correlated (so close to a 1:1 line)
+plot(observed,predicted, ylab= "Predicted", xlab = "Observed", main = "Tamarisk Cover", pch = 20)
+
+# we can fit a line to denote the central tendency
+# and plot it on top of the points
+abline(fit <- lm(predicted ~ observed), col='Black')
+
+# we can add a legend that calculates an R2 value (ranges from 0 to 1, the
+# closer to 1 the better)
+legend("topright", bty="n", legend=paste("R2 is", format(summary(fit)$adj.r.squared, digits=4)))
+
+```
+
+
+--------------------------------------------------------------------- Running a binary model
+
+
+## Now to a Binary model
+The data preparation for the binary model is essentially the same. What differs is the response variable used, the structure of the Random Forest formula, and the evaluation metrics. The example below shows the process using the predictor variables that were generated by the variable selection process for the regression model. In your own work, it would be worth repeating the variable selection process becuase the binary model will select different predictor variables.
+```{r fig.cap = "Standard outputs for the binary random forest model."}
+# define the response variable
+responce_var <- as.factor(data$PresenceAb)
+# define the predictor variables
+predictor_var <- rastercolumns_cov2
+
+# run the random forest model where the response variable is being predicted # by all other variables within the data frame "dataset"
+rf_model2 = randomForest(x = predictor_var, y = responce_var, importance = TRUE )
+
+# print the results of the rf model
+rf_model2
+```
+The binary model outputs a different set of results, which includes the Out Of Bag Error and a confusion matrix. Additional evaluation metrics can be generated by running the following code.
+```{r fig.cap = "Extra evaluate metrics are available for the binary model through the accuracy function of R.", message = FALSE, warning= FALSE}
+predicted <- predict(rf_model2)
+observed <- data$PresenceAb
+
+accuracy(x=predicted, y=observed)
+
+```
+
+
+
+
+
+
+----------------------------------------------------   Apply model to Imagery
+
+
+# Making your Results Spatial
+
+It is very important to remember that even though we are using Random Forest to model spatial data, it is not a spatial model; it's a statistical model. We can use our model to predict over space as long as we restrain our prediction area to areas representative of the environmental conditions that are part of our sampling data. All the data used in this tutorial were sampled from riparian areas, and therefore our model can really only be used with confidence in other riparian areas. Knowing the limitations of your data is often the most significant aspect in understanding what your model can do.
+
+We can make spatial predictions from our model by applying it to spatial data. In this case we will be using the series of rasters that were identified as top predictors by our model selection. Here is the list:
+
+```{r}
+colnames(predictor_var)
+```
+
+We need to load these images into R in order to use them as variables within the model. For the sake of this tutorial we've created a 10 by 10 km subset of each of these rasters to help reduce the overall processing time. For your own project, you would want to run the code on a much larger study area.
+
+```{r}
+# Call in the rasters that are associated with the response variables
+X0915_blue=raster(file.path(wd,"indices_for_tutorial", "x0915_blue1.tif"))
+X0415_gndvi=raster(file.path(wd,"indices_for_tutorial", "x0415_gndvi.tif"))
+X0716_gemi=raster(file.path(wd,"indices_for_tutorial", "x0716_gemi.tif"))
+X0815_slavi=raster(file.path(wd,"indices_for_tutorial", "x0815_slavi.tif"))
+X0716_ndwi2=raster(file.path(wd,"indices_for_tutorial", "x0815_ndwi2.tif"))
+ 
+
+# Stack the objects into one data frame
+stack_5band=stack(X0915_blue,X0415_gndvi,X0716_gemi,X0815_slavi,X0716_ndwi2)
+                   
+# Add header names
+names(stack_5band)=c('X0915_blue','X0415_gndvi', 'X0716_gemi', 'X0815_slavi',  'X0716_ndwi2' )
+
+# Map the regression based model
+predict(stack_5band,rf_model1,
+        filename="prediction_map_regression",fun=predict,format="GTiff",datatype="FLT4S", overwrite=TRUE)
+
+# Map the binary based model
+predict(stack_5band, rf_model2, filename="prediction_map_binary",fun=predict,format="GTiff",datatype="FLT4S",overwrite=TRUE )
+
+```
+This process takes the final descision tree that resulted from running Random Forest, and uses it to predict the identity of each cell based on the input values of the 4 prediction layers. Because the raster cells are tied to a geographic location, the result is a geographic product.
+
+ 
+
+```{r}
+require(rgdal)
+require(raster)
+
+# Read tiff and convert to raster layer object
+regression = raster("prediction_map_regression.tif")
+binary = raster("prediction_map_binary.tif")
+
+# Plot the results
+par(mfrow=c(1,2), mar=c(3,3,3,5))
+plot(regression, main="Regression Model", xaxt='n', yaxt='n')
+plot(binary, main="Binary Model", xaxt='n', yaxt='n')
+
+```
+
+
+
+# Map that Please
+Now that we have spatial results, we want to clean up our maps into useful products that we can analyze.
+
+## Clip Rasters to Riparian Vegetation Corridors (i.e. Valley Bottoms)
+1. Using the provided VBET shapefile, turn the shapefile into a raster using the "Polygon to Raster" tool in ArcMap. Choose the appropriate spatial resolution (30m for Landsat, 20m for Sentinel). Reclassify the entire VBET raster to a value of 1.
+<br>
+![](tutorial_images/2_reclassifyVBET.png)
+<br>
+<br>
+<br>
+2. Use the "Extract by Mask" tool to clip the rasters. The binary raster should be used as the input, and the VBET raster should be the mask. Repeat for the regression raster.
+<br>
+![](tutorial_images/3_ExtractbyMask_vbet.png)
+<br>
+<br>
+<br>
+
+## Two Step Classification
+
+1. Use the "Raster Calculator" tool. Multiply the binary raster by the regression raster. Click OK. Pixels that have a value of zero in the binary raster will remove values from corresponding pixels of the regression raster.
+<br>
+![](tutorial_images/4_RasterCalc_2step.png)
+<br>
+<br>
+
+## Reclassify
+
+1. Now we want to reclassify the raster. Open the "Reclassify" tool, and click on Classify. In the upper left, choose 9 Classes. On the right hand side, separate the break values into segments of 10. Click OK.
+
+![](tutorial_images/6_breakvalues.png)
+<br>
+<br>
+<br>
+2. Be sure to change the New values and number from 0 to 8 (it automatically numbers from 1 to 9). Click OK.
+<br>
+![](tutorial_images/5_reclassify2step.png)
+<br>
+<br>
+
+## Field Calculator
+
+Now that we have prepared our map, we want to assess area of tamarisk cover. We are going to calculate the area of the map covered by tamarisk in square meters and square kilometers. We are then going to do a weighted calculation to determine the percentage of tamarisk covering our map.
+
+1. Right click on the layer under the Table of Contents, and Open Attribute Table.
+
+2. Then, on the dropdown in the top left corner, click Add Field. Label it "Area_m" and choose Float as the Type. Click OK.
+
+![](tutorial_images/7_addField.png)
+<br>
+<br>
+<br>
+3. Right click in the heading of the new column and choose the Field Calculator option. Multiply the Count column by the area of a pixel (900 for Landsat and 400 for Sentinel).
+
+![](tutorial_images/8_AttribTable_FieldCalc.png)
+
+<br>
+<br>
+
+![](tutorial_images/9_FieldCalc_AreaM.png)
+<br>
+<br>
+
+4. Add another field labeled "Area_km". In Field Calculator, multiply "Area_m" by 0.000001 to calculate the area of the map in square kilometers.
+
+5. Now that we know the area of the map (i.e. area of tamarisk cover), we want to determine a weighted area of tamarisk cover to get a more accurate depiction. We are going to multiply the percent cover of tamarisk by the area in square kilometers. Add another field and label it "Weight_km". Multiply "Weight_km" by "Value" divided by 10. Click OK.
+
+![](tutorial_images/10_FieldCalc_weighted.png)
+<br>
+<br>
+<br>
+
+6. To change the color ramp, right click on the layer under Table of Contents. Go to Properties > Symbology.
+
+<br>
+<br>
+Voila! You have completed making predicted percent cover maps of tamarisk in the Colorado River Basin.
+
+![](tutorial_images/11_finalMap.png)
+<br>
+<br>
+
+# Closing Notes
+Thank you for running through our tutorial. If you're feeling overwhelmed, don't worry. With a little time and practice, you'll become a pro at creating useful maps of tamarisk cover in the Colorado River Basin.
+
+  &mdash;The Colorado River Basin Water Resources team
+
